@@ -1,15 +1,12 @@
-from enum import Enum
 import gymnasium as gym
 import hydra
-from omegaconf import DictConfig, OmegaConf
+from omegaconf import OmegaConf
 from stable_baselines3 import A2C, PPO, SAC
 from environment import ForestFireEnv, MDPConfig, ActionEnum
 from stable_baselines3.common.vec_env import VecVideoRecorder, DummyVecEnv
-import os
 import sys
 from dataclasses import dataclass
 from hydra.core.config_store import ConfigStore
-from pprint import pprint
 import importlib
 import pygame
 

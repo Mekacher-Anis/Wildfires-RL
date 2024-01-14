@@ -5,7 +5,7 @@ This project offers a [Gymnasium](https://gymnasium.farama.org/index.html) envir
 ## Setup
 1. Create vitual python environment
   ```shell
-  conda create -n wildfires python=3.9
+  conda create -n wildfires python=3.10
   ```
 2. Activate environment
   ```shell
@@ -15,7 +15,7 @@ This project offers a [Gymnasium](https://gymnasium.farama.org/index.html) envir
   ```shell
   pip install -r requirements.txt
   ```
-4. Play the game!!
+4. Play the game!! (first run might take 5 seconds or so to start)
   ```shell
     python3 src/main.py +action=play +MDP=MDP_basic
   ```
