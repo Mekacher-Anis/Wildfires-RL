@@ -1,0 +1,9 @@
+# @package _global_
+train:
+  agent: "PPO"
+  agent_policy: "MlpPolicy"
+  total_timesteps: 1000
+
+MDP:
+  rendering:
+    render_mode: 'none'

@@ -1,0 +1,29 @@
+environment:
+  grid_size: 1000
+  forest_density: 0.95
+  start_fires_num: 10
+  losing_reward: -1000
+  tree_fire_spread_prob: 1.0
+  diagonal_tree_fire_spread_prob: 0.8
+  trench_fire_spread_prob: 0.5
+  diagonal_trench_fire_spread_prob: 0.4
+  disable_fire_propagation: False
+
+resources:
+  budget: 1000000
+  firefighters: 1000
+  firetrucks: 200
+  helicopters: 10
+  control_line_cost: 600
+  burnout_cost: 600
+  firetruck_cost: 500
+  helicopter_cost: 5000
+  firetruck_success_rate: 0.6
+  helicopter_success_rate: 0.7
+  firetruck_range: 70
+  helicopter_range: 150
+
+rendering:
+  render_mode: 'rgb_array' # 'human' or 'rgb_array' or 'none'
+  render_fps: 4
+  window_size: 500
