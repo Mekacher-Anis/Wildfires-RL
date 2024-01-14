@@ -1,5 +1,5 @@
 # Environment configuration
-The MDP configuration is loaded using hydra from [MDP.yaml](./MDP.yaml).\
+The MDP configuration is loaded using hydra from [MDP.yaml](./MDP_basic.yaml).\
 Here's what the different values mean:
 - `grid_size`: (default 100) how big is the map. If you change this, please make sure that you also set adequate values for the different resources list below; if the agent doesn't have enough resource and there are multiple fires set then it might not be able to put-out the fire.
 - `forest_density`: (default 0.6) percentage of map covered by trees. If you set this to a small value, then the map will be sparse and the fire might not spread.
