@@ -19,7 +19,7 @@ This project offers a [Gymnasium](https://gymnasium.farama.org/index.html) envir
   ```shell
     python3 src/main.py +action=play +MDP=MDP_basic
   ```
-PS: Change the MDP configuration in [environment](./configs/environment/README.md) and see what happens 😉
+PS: Change the MDP configuration in [environment](./configs/MDP/README.md) and see what happens 😉
 ## Train
 Train a PPO agent from [Stable-Baselines3](https://stable-baselines3.readthedocs.io/en/master/index.html):
 ```
