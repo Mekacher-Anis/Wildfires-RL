@@ -2,7 +2,7 @@
 train:
   agent: "PPO"
   agent_policy: "MlpPolicy"
-  total_timesteps: 1000
+  total_timesteps: 1000000
 
 MDP:
   rendering:

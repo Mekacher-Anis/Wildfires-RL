@@ -17,7 +17,7 @@ cs = ConfigStore.instance()
 class TrainConfig:
     agent: str = "PPO"  # A2C, PPO, SAC
     agent_policy: str = "MlpPolicy"
-    total_timesteps: int = 1000
+    total_timesteps: int = 1000000
 
 
 cs.store(name="train", node=TrainConfig)
@@ -56,7 +56,7 @@ def train(cfg: BaseConfig) -> None:
         verbose=cfg["verbose"],
         tensorboard_log=cfg["tensorboard_log"],
     )
-    model.learn(total_timesteps=100000)
+    model.learn(total_timesteps=cfg["train"]["total_timesteps"])
     model.save("trained_agent.zip")
 
 
