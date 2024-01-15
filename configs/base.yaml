@@ -1,8 +1,6 @@
 env: "MDP_basic"
-tensorboard_log: "./logs/"
 verbose: 1
 
 record:
-  trained_agent_path: "trained_agent"
   render_fps: 4
   video_length: 1000

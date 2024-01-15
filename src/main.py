@@ -2,13 +2,16 @@ import gymnasium as gym
 import hydra
 from omegaconf import OmegaConf
 from stable_baselines3 import A2C, PPO, SAC
+from stable_baselines3.common.base_class import BaseAlgorithm
 from environment import ForestFireEnv, MDPConfig, ActionEnum
 from stable_baselines3.common.vec_env import VecVideoRecorder, DummyVecEnv
+from stable_baselines3.common.callbacks import EvalCallback
 import sys
 from dataclasses import dataclass
 from hydra.core.config_store import ConfigStore
 import importlib
 import pygame
+import os
 
 cs = ConfigStore.instance()
 
@@ -26,7 +29,6 @@ cs.store(name="train", node=TrainConfig)
 @dataclass
 class RecordConfig:
     render_fps: int = 4
-    trained_agent_path: str = "trained_agent"
     video_length: int = 1000
 
 
@@ -37,7 +39,7 @@ cs.store(name="record", node=RecordConfig)
 class BaseConfig:
     env: str = "MDP_basic"
     verbose: int = 1
-    tensorboard_log: str = "./logs/"
+    trained_agent_path: str = ""
     train: TrainConfig = TrainConfig()
     record: RecordConfig = RecordConfig()
     MDP: MDPConfig = MDPConfig()
@@ -50,23 +52,43 @@ def train(cfg: BaseConfig) -> None:
     env: gym.Env = gym.make("ForestFireEnv-v0", cfg=cfg["MDP"])
     module = importlib.import_module("stable_baselines3")
     AgentClass = getattr(module, cfg["train"]["agent"])
-    model = AgentClass(
+    model: BaseAlgorithm = AgentClass(
         cfg["train"]["agent_policy"],
         env,
         verbose=cfg["verbose"],
-        tensorboard_log=cfg["tensorboard_log"],
+        tensorboard_log=os.path.join(
+            hydra.core.hydra_config.HydraConfig.get().runtime.output_dir,
+            "tensorboard/",
+        ),
     )
-    model.learn(total_timesteps=cfg["train"]["total_timesteps"])
-    model.save("trained_agent.zip")
+    eval_env: gym.Env = gym.make("ForestFireEnv-v0", cfg=cfg["MDP"])
+    eval_callback = EvalCallback(
+        eval_env,
+        best_model_save_path=hydra.core.hydra_config.HydraConfig.get().runtime.output_dir,
+        log_path="./logs/",
+        eval_freq=10000,
+        deterministic=True,
+        render=False,
+    )
+    model.learn(total_timesteps=cfg["train"]["total_timesteps"], callback=eval_callback)
+    model.save(
+        os.path.join(
+            hydra.core.hydra_config.HydraConfig.get().runtime.output_dir,
+            "trained_agent.zip",
+        )
+    )
 
 
 def record_trained_agent(cfg: BaseConfig) -> None:
     # will throw an error if not set
     sys.setrecursionlimit(100000)
 
-    env = DummyVecEnv(
-        [lambda: gym.make("ForestFireEnv-v0", render_mode="rgb_array", cfg=cfg["MDP"])]
-    )
+    if not cfg["trained_agent_path"]:
+        print("No trained agent path specified")
+        return
+
+    cfg["MDP"]["rendering"]["render_mode"] = "rgb_array"
+    env = DummyVecEnv([lambda: gym.make("ForestFireEnv-v0", cfg=cfg["MDP"])])
 
     # Record the video starting at the first step
     env = VecVideoRecorder(
