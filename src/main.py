@@ -6,6 +6,7 @@ from stable_baselines3.common.base_class import BaseAlgorithm
 from environment import ForestFireEnv, MDPConfig, ActionEnum
 from stable_baselines3.common.vec_env import VecVideoRecorder, DummyVecEnv
 from stable_baselines3.common.callbacks import EvalCallback
+from stable_baselines3.common.evaluation import evaluate_policy
 import sys
 from dataclasses import dataclass
 from hydra.core.config_store import ConfigStore
@@ -52,20 +53,21 @@ def train(cfg: BaseConfig) -> None:
     env: gym.Env = gym.make("ForestFireEnv-v0", cfg=cfg["MDP"])
     module = importlib.import_module("stable_baselines3")
     AgentClass = getattr(module, cfg["train"]["agent"])
+    log_path = os.path.join(
+        hydra.core.hydra_config.HydraConfig.get().runtime.output_dir,
+        "tensorboard/",
+    )
     model: BaseAlgorithm = AgentClass(
         cfg["train"]["agent_policy"],
         env,
         verbose=cfg["verbose"],
-        tensorboard_log=os.path.join(
-            hydra.core.hydra_config.HydraConfig.get().runtime.output_dir,
-            "tensorboard/",
-        ),
+        tensorboard_log=log_path,
     )
     eval_env: gym.Env = gym.make("ForestFireEnv-v0", cfg=cfg["MDP"])
     eval_callback = EvalCallback(
         eval_env,
         best_model_save_path=hydra.core.hydra_config.HydraConfig.get().runtime.output_dir,
-        log_path="./logs/",
+        log_path=log_path,
         eval_freq=10000,
         deterministic=True,
         render=False,
@@ -77,6 +79,21 @@ def train(cfg: BaseConfig) -> None:
             "trained_agent.zip",
         )
     )
+
+
+def eval_trained_agent(cfg: BaseConfig) -> None:
+    if not cfg["trained_agent_path"]:
+        print("No trained agent path specified")
+        return
+
+    env = gym.make("ForestFireEnv-v0", cfg=cfg["MDP"])
+    model = PPO.load(cfg["trained_agent_path"])
+
+    mean_reward, std_reward = evaluate_policy(model, env, n_eval_episodes=10)
+
+    print(f"mean_reward:{mean_reward:.2f} +/- {std_reward:.2f}")
+
+    env.close()
 
 
 def record_trained_agent(cfg: BaseConfig) -> None:
@@ -194,6 +211,8 @@ def main(cfg: BaseConfig) -> None:
         record_trained_agent(cfg)
     elif cfg["action"] == "play":
         play(cfg)
+    elif cfg["action"] == "eval":
+        eval_trained_agent(cfg)
     else:
         print("Unknown action")
         return

@@ -38,6 +38,16 @@ OR when using vscode run command "Python: Launch Tensorboard"
 
 For a description of what the different graphs mean, checkout the [Stable Baselines 3 Logger Docs](https://stable-baselines3.readthedocs.io/en/master/common/logger.html)
 
+## Evaluate
+To evaluate a trained agent
+```shell
+python3 src/main.py +action=eval +MDP=MDP_basic trained_agent_path=path/to/best_model.zip
+```
+OR to record a trained agent
+```shell
+python3 src/main.py +action=record +MDP=MDP_basic trained_agent_path=path/to/best_model.zip
+```
+
 ## Why?
 Accoring to different resources [[1](https://www.wri.org/insights/global-trends-forest-fires)] [[2](https://sgp.fas.org/crs/misc/IF10244.pdf)] millions of acres of green forests are lost every year due to wildfires and this leads to a vicious cycle of more wildfires due to the carbon emissions from the fire as shown in the follow picture:
 ![fire-climate-feedback-loop-wri.png](https://files.wri.org/d8/s3fs-public/styles/965_wide/s3/2023-08/fire-climate-feedback-loop-wri.png?VersionId=uGo_Op7ZGn.lHtdd_4GL32pGfQHWht7W&itok=8Zv1AymP)
