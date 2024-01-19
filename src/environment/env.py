@@ -18,6 +18,16 @@ class ActionEnum(Enum):
 
 
 def get_action_name(action: tuple[ActionEnum, int, int]):
+    """
+    Get the name of an action.
+    
+    Args:
+        action (tuple): The action tuple.
+        
+    Returns:
+        str: The name of the action.
+    """
+    
     action_type, y, x = action
     # action_type = int(action_type * len(ActionEnum) - 1)
     # y, x = int(y * (4 - 1)), int(x * (4 - 1))
@@ -33,6 +43,47 @@ def get_action_name(action: tuple[ActionEnum, int, int]):
         return "Do nothing"
     else:
         return "Unknown action"
+    
+def print_observation(observation: dict):
+    """
+    Print the current state of the environment.
+    
+    Args:
+        observation (dict): The observation returned by the environment.
+    """
+    print(observation.keys())
+    # print Map
+    for i in range(observation["map_state"].shape[0]):
+        # print map border
+        if i == 0:
+            print("+" + "-" * observation["map_state"].shape[1] + "+")
+        
+        for j in range(observation["map_state"].shape[1]):
+            if j == 0:
+                print("|", end="")
+            
+            if observation["map_state"][i, j] == StateEnum.EMPTY.value:
+                print(" ", end="")
+            elif observation["map_state"][i, j] == StateEnum.TREE.value:
+                print("T", end="")
+            elif observation["map_state"][i, j] == StateEnum.FIRE.value:
+                print("F", end="")
+            elif observation["map_state"][i, j] == StateEnum.TRENCH.value:
+                print("X", end="")
+            
+            if j == observation["map_state"].shape[1] - 1:
+                print("|")
+        
+        if i == observation["map_state"].shape[0] - 1:
+            print("+" + "-" * observation["map_state"].shape[1] + "+")
+        
+    # print resources
+    print(
+        f"Budget: {observation['resources'][0]} | Firefighters: {observation['resources'][1]}"
+    )
+    print(
+        f"Firetrucks: {observation['resources'][2]} | Helicopters: {observation['resources'][3]}"
+    )
 
 
 class StateEnum(Enum):
@@ -154,6 +205,7 @@ class ForestFireEnv(gym.Env):
         self.affected_blocks: np.ndarray[bool] = None
         """ A boolean array that indicates which blocks were affected by agent's actions. """
         self.state = self._init_state()
+        self.num_original_trees: int = 0
         self.check_config()
 
         self.window_size = cfg["rendering"]["window_size"]
@@ -177,6 +229,13 @@ class ForestFireEnv(gym.Env):
         """
         self.cell_size = self.window_size / self.grid_size
         """ How many pixels on the window correspond to a single cell in the grid. """
+        self.old_state: dict[str, any] = deepcopy(self.state)
+        """
+        Used when redering the environment in rgb_array mode. Because the
+        environment is rendered after the fire has propagted, we need to keep a
+        copy of the state before the fire propagation, because the action was
+        applied on the old state.
+        """
 
     def _init_state(self, seed: int = None):
         # set seed
@@ -204,6 +263,7 @@ class ForestFireEnv(gym.Env):
         ] = StateEnum.FIRE.value
         self.affected_blocks = np.zeros((self.grid_size, self.grid_size), dtype=bool)
         self.last_action = None
+        self.num_original_trees = map_state[map_state == StateEnum.TREE.value].size
 
         return {
             "map_state": map_state,
@@ -220,6 +280,7 @@ class ForestFireEnv(gym.Env):
     def step(
         self, action: tuple[ActionEnum, int, int]
     ) -> tuple[np.ndarray, float, bool, bool, dict]:
+        self.old_state = deepcopy(self.state)
         next_state = deepcopy(self.state)
         reward = 0
         done = False
@@ -300,6 +361,17 @@ class ForestFireEnv(gym.Env):
             next_state["resources"][0] -= self.environment["helicopter_cost"]
             next_state["resources"][3] -= 1
             action_applied = True
+            
+        # we render before updating the fire spread, because the action
+        # applied was applied on the previous state
+        if action_applied:
+            self.last_action = action
+
+        if self.render_mode == "human" or self.render_mode == "rgb_array":
+            self._render_frame(
+                action=action if action_applied else None,
+                reward=reward,
+            )
 
         # Update the fire spread
         if not self.environment["disable_fire_propagation"]:
@@ -337,7 +409,7 @@ class ForestFireEnv(gym.Env):
             # we can't test for 0 because the fire might not have spread to all trees
             if (
                 np.sum(next_state["map_state"] == StateEnum.TREE.value)
-                < 0.1 * self.grid_size * self.grid_size * self.environment["forest_density"]
+                < 0.1 * self.num_original_trees
             ):
                 reward += self.environment["losing_reward"]
             else:
@@ -377,18 +449,14 @@ class ForestFireEnv(gym.Env):
         # Update state
         self.state = next_state
 
-        if action_applied:
-            self.last_action = action
-
-        if self.render_mode == "human" or self.render_mode == "rgb_array":
-            self._render_frame(
-                action=action if action_applied else None,
-                reward=reward,
-            )
-
         if self.eval_mode:
             print(f"Action: {action}, Reward: {reward}, Done: {done}")
-
+            # in eval the reward is actually the percentage of trees left when done
+            # if not done we return 0 so accumulated reward is not affected
+            if done:
+                reward = np.sum(next_state["map_state"] == StateEnum.TREE.value) / self.num_original_trees
+            else:
+                reward = 0
         return next_state, reward, done, False, {}
 
     def get_next_block_state(self, current_state: StateEnum, diagonal: bool):
@@ -427,6 +495,7 @@ class ForestFireEnv(gym.Env):
     def reset(self, seed: int = None, options: dict = None):
         # Reset the state of the environment to an initial state
         self.state = self._init_state(seed=seed)
+        self.old_state = deepcopy(self.state)
         if self.render_mode == "human":
             self._render_frame()
         return self.state, {}
@@ -451,6 +520,8 @@ class ForestFireEnv(gym.Env):
             self.window.fill((255, 255, 255))
         if self.clock is None and self.render_mode == "human":
             self.clock = pygame.time.Clock()
+            
+        state = self.old_state if self.render_mode == "rgb_array" else self.state
 
         canvas = pygame.Surface((self.window_size, self.window_size))
         canvas.fill((255, 255, 255))
@@ -462,11 +533,11 @@ class ForestFireEnv(gym.Env):
         for i in range(self.grid_size):
             for j in range(self.grid_size):
                 color = (139, 69, 19)  # Dark brown color for empty cell
-                if self.state["map_state"][i, j] == StateEnum.TREE.value:
+                if state["map_state"][i, j] == StateEnum.TREE.value:
                     color = (0, 255, 0)  # Green for tree
-                elif self.state["map_state"][i, j] == StateEnum.FIRE.value:
+                elif state["map_state"][i, j] == StateEnum.FIRE.value:
                     color = (255, 0, 0)  # Red for fire
-                elif self.state["map_state"][i, j] == StateEnum.TRENCH.value:
+                elif state["map_state"][i, j] == StateEnum.TRENCH.value:
                     color = (227, 145, 107)  # Light brown for trench
                 pygame.draw.rect(
                     canvas,
@@ -502,7 +573,7 @@ class ForestFireEnv(gym.Env):
                 affected_blocks = circle_indices(
                     (x, y),
                     self.environment["firetruck_range"],
-                    self.state["map_state"].shape,
+                    state["map_state"].shape,
                 )
                 for i, j in zip(*affected_blocks):
                     if (0 <= i < self.grid_size) and (0 <= j < self.grid_size):
@@ -520,7 +591,7 @@ class ForestFireEnv(gym.Env):
                 affected_blocks = circle_indices(
                     (x, y),
                     self.environment["helicopter_range"],
-                    self.state["map_state"].shape,
+                    state["map_state"].shape,
                 )
                 for i, j in zip(*affected_blocks):
                     if (0 <= i < self.grid_size) and (0 <= j < self.grid_size):

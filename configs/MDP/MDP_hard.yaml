@@ -2,7 +2,7 @@ environment:
   grid_size: 1000
   forest_density: 0.95
   start_fires_num: 10
-  losing_reward: -1000
+  losing_reward: 0
   tree_fire_spread_prob: 1.0
   diagonal_tree_fire_spread_prob: 0.8
   trench_fire_spread_prob: 0.5

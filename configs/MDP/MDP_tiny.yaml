@@ -2,7 +2,7 @@ environment:
   grid_size: 5
   forest_density: 0.9
   start_fires_num: 1
-  losing_reward: -1000
+  losing_reward: 0
   tree_fire_spread_prob: 1.0
   diagonal_tree_fire_spread_prob: 0.573
   trench_fire_spread_prob: 0.2
@@ -18,9 +18,9 @@ environment:
   helicopter_range: 2
 
 resources:
-  budget: 36
+  budget: 76
   firefighters: 2
-  firetrucks: 1
+  firetrucks: 9
   helicopters: 1
 
 rendering:

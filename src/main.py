@@ -14,7 +14,8 @@ import importlib
 import pygame
 import os
 
-from environment.env import get_action_name
+from environment.env import get_action_name, print_observation
+from environment.env_wrapper import CustomEnvWrapper
 
 cs = ConfigStore.instance()
 
@@ -97,10 +98,11 @@ def eval_trained_agent(cfg: BaseConfig) -> None:
         print("No trained agent path specified")
         return
 
+    cfg["MDP"]["eval_mode"] = True
     env = gym.make("ForestFireEnv-v0", cfg=cfg["MDP"])
     model = PPO.load(cfg["trained_agent_path"])
 
-    mean_reward, std_reward = evaluate_policy(model, env, n_eval_episodes=10)
+    mean_reward, std_reward = evaluate_policy(model, env, n_eval_episodes=100)
 
     print(f"mean_reward:{mean_reward:.2f} +/- {std_reward:.2f}")
 
@@ -116,11 +118,11 @@ def record_trained_agent(cfg: BaseConfig) -> None:
         return
 
     cfg["MDP"]["rendering"]["render_mode"] = "rgb_array"
-    env = DummyVecEnv([lambda: gym.make("ForestFireEnv-v0", cfg=cfg["MDP"])])
+    wrapped_env = CustomEnvWrapper([lambda: gym.make("ForestFireEnv-v0", cfg=cfg["MDP"])])
 
     # Record the video starting at the first step
     env = VecVideoRecorder(
-        env,
+        wrapped_env,
         "videos",
         record_video_trigger=lambda x: x == 0,
         video_length=cfg["record"]["video_length"],
@@ -134,10 +136,22 @@ def record_trained_agent(cfg: BaseConfig) -> None:
     obs = env.reset()
     sum_reward = 0
     for i in range(n_steps):
+        for i in range(len(obs["map_state"])):
+            print_observation(
+                {
+                    "map_state": obs["map_state"][i],
+                    "resources": obs["resources"][i],
+                }
+            )
         action, _states = model.predict(obs)
+        print(f"Action: {get_action_name(action[0])}")
         obs, reward, done, info = env.step(action)
+        print(f"Reward: {reward}")
         sum_reward += reward
         if done:
+            # when rendering the environment in rgb_array mode, the rendering is off 
+            # by one step, so we need to manually trigger the last rendering here
+            env.step([(0, 0, 0)])
             break
     print(f"Accumulated reward: {sum_reward}")
     env.close()
