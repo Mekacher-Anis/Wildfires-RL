@@ -1,6 +1,6 @@
 # Fighting wildfires with Reinforcement Learning
 
-This project offers a [Gymnasium](https://gymnasium.farama.org/index.html) environment that simulates a wildfire and an agent that can do various actions in order to put-out the fire.
+This project offers a [Gymnasium](https://gymnasium.farama.org/index.html) environment that simulates a wildfire and an agent that can do various actions in order to put-out the fire. See [Why](#why)?!
 
 ## Setup
 1. Create vitual python environment
@@ -30,6 +30,12 @@ add a custom configuration under [configs/train](./configs/train/) and call
 ```shell
 python3 src/main.py +action=train +MDP=MDP_basic +train=custom_config
 ```
+OR
+continue training from a trained agent (same configuration has to be used)
+```shell
+python3 src/main.py +action=train +MDP=MDP_basic +train=train_PPO_single_run_basic trained_agent_path=path/to/best_model.zip
+```
+
 Don't forget to launch Tensorboard to see your logs ;)
 ```shell
 tensorboard --logdir='./logs'
@@ -43,10 +49,12 @@ To evaluate a trained agent
 ```shell
 python3 src/main.py +action=eval +MDP=MDP_basic trained_agent_path=path/to/best_model.zip
 ```
-OR to record a trained agent
+OR to record a trained agent (videos will be in folder './videos')
 ```shell
 python3 src/main.py +action=record +MDP=MDP_basic trained_agent_path=path/to/best_model.zip
 ```
+
+When running in eval mode by setting the `eval_mode` to true in MDP configuration the reported reward is actually the proportion of trees left from the starting number of trees for each episode. This is more useful than the accumulated rewards because it allows us to compare different reward functions and gives a somewhat realistic estimate of our true goal which is stopping the fire as fast as possible and saving the trees.
 
 ## Why?
 Accoring to different resources [[1](https://www.wri.org/insights/global-trends-forest-fires)] [[2](https://sgp.fas.org/crs/misc/IF10244.pdf)] millions of acres of green forests are lost every year due to wildfires and this leads to a vicious cycle of more wildfires due to the carbon emissions from the fire as shown in the follow picture:
