@@ -4,7 +4,7 @@ from omegaconf import OmegaConf
 from stable_baselines3 import A2C, PPO, SAC
 from stable_baselines3.common.base_class import BaseAlgorithm
 from environment import ForestFireEnv, MDPConfig, ActionEnum
-from stable_baselines3.common.vec_env import VecVideoRecorder, DummyVecEnv
+from stable_baselines3.common.vec_env import VecVideoRecorder, DummyVecEnv, VecMonitor
 from stable_baselines3.common.callbacks import EvalCallback
 from stable_baselines3.common.evaluation import evaluate_policy
 import sys
@@ -13,6 +13,8 @@ from hydra.core.config_store import ConfigStore
 import importlib
 import pygame
 import os
+
+from environment.env import get_action_name
 
 cs = ConfigStore.instance()
 
@@ -52,32 +54,41 @@ cs.store(name="base", node=BaseConfig)
 def train(cfg: BaseConfig) -> None:
     env: gym.Env = gym.make("ForestFireEnv-v0", cfg=cfg["MDP"])
     module = importlib.import_module("stable_baselines3")
-    AgentClass = getattr(module, cfg["train"]["agent"])
+    AgentClass: BaseAlgorithm.__class__ = getattr(module, cfg["train"]["agent"])
     log_path = os.path.join(
         hydra.core.hydra_config.HydraConfig.get().runtime.output_dir,
         "tensorboard/",
     )
-    model: BaseAlgorithm = AgentClass(
-        cfg["train"]["agent_policy"],
-        env,
-        verbose=cfg["verbose"],
-        tensorboard_log=log_path,
-    )
+    model: BaseAlgorithm
+    if cfg["trained_agent_path"]:
+        print("Loading trained agent")
+        model = AgentClass.load(cfg["trained_agent_path"], env=env)
+    else:
+        print("Training new agent")
+        model = AgentClass(
+            cfg["train"]["agent_policy"],
+            env,
+            verbose=cfg["verbose"],
+            tensorboard_log=log_path,
+        )
+    cfg["MDP"]["eval_mode"] = True
     eval_env: gym.Env = gym.make("ForestFireEnv-v0", cfg=cfg["MDP"])
+    eval_env.reset()
     eval_callback = EvalCallback(
         eval_env,
         best_model_save_path=hydra.core.hydra_config.HydraConfig.get().runtime.output_dir,
         log_path=log_path,
-        eval_freq=10000,
+        eval_freq=5000,
         deterministic=True,
         render=False,
+        verbose=0,
     )
     model.learn(total_timesteps=cfg["train"]["total_timesteps"], callback=eval_callback)
     model.save(
         os.path.join(
             hydra.core.hydra_config.HydraConfig.get().runtime.output_dir,
             "trained_agent.zip",
-        )
+        ),
     )
 
 
@@ -121,11 +132,14 @@ def record_trained_agent(cfg: BaseConfig) -> None:
     n_steps = cfg["record"]["video_length"]
 
     obs = env.reset()
+    sum_reward = 0
     for i in range(n_steps):
-        action, _states = model.predict(obs, deterministic=True)
+        action, _states = model.predict(obs)
         obs, reward, done, info = env.step(action)
+        sum_reward += reward
         if done:
             break
+    print(f"Accumulated reward: {sum_reward}")
     env.close()
 
 

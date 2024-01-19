@@ -8,12 +8,6 @@ environment:
   trench_fire_spread_prob: 0.5
   diagonal_trench_fire_spread_prob: 0.4
   disable_fire_propagation: False
-
-resources:
-  budget: 1000000
-  firefighters: 1000
-  firetrucks: 200
-  helicopters: 10
   control_line_cost: 600
   burnout_cost: 600
   firetruck_cost: 500
@@ -22,6 +16,12 @@ resources:
   helicopter_success_rate: 0.7
   firetruck_range: 70
   helicopter_range: 150
+
+resources:
+  budget: 1000000
+  firefighters: 1000
+  firetrucks: 200
+  helicopters: 10
 
 rendering:
   render_mode: 'rgb_array' # 'human' or 'rgb_array' or 'none'

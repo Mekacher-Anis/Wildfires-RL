@@ -6,14 +6,33 @@ import pygame
 from enum import Enum
 from dataclasses import dataclass
 from hydra.core.config_store import ConfigStore
+from copy import deepcopy
 
 
 class ActionEnum(Enum):
-    CONTROL_LINE = 0
-    BURNOUT = 1
-    FIRETRUCK = 2
-    HELICOPTER = 3
-    DO_NOTHING = 4
+    DO_NOTHING = 0
+    CONTROL_LINE = 1
+    BURNOUT = 2
+    FIRETRUCK = 3
+    HELICOPTER = 4
+
+
+def get_action_name(action: tuple[ActionEnum, int, int]):
+    action_type, y, x = action
+    # action_type = int(action_type * len(ActionEnum) - 1)
+    # y, x = int(y * (4 - 1)), int(x * (4 - 1))
+    if action_type == ActionEnum.CONTROL_LINE.value:
+        return f"Control line at ({x}, {y})"
+    elif action_type == ActionEnum.BURNOUT.value:
+        return f"Burnout at ({x}, {y})"
+    elif action_type == ActionEnum.FIRETRUCK.value:
+        return f"Firetruck at ({x}, {y})"
+    elif action_type == ActionEnum.HELICOPTER.value:
+        return f"Helicopter at ({x}, {y})"
+    elif action_type == ActionEnum.DO_NOTHING.value:
+        return "Do nothing"
+    else:
+        return "Unknown action"
 
 
 class StateEnum(Enum):
@@ -59,14 +78,6 @@ class EnvironmentConfig:
     disable_fire_propagation: bool = False
     losing_reward: int = -1000
     disable_fire_propagation: bool = False
-
-
-@dataclass
-class ResourcesConfig:
-    budget: int = 10000
-    firefighters: int = 100
-    firetrucks: int = 20
-    helicopters: int = 1
     control_line_cost: int = 60
     burnout_cost: int = 60
     firetruck_cost: int = 50
@@ -78,6 +89,14 @@ class ResourcesConfig:
 
 
 @dataclass
+class ResourcesConfig:
+    budget: int = 10000
+    firefighters: int = 100
+    firetrucks: int = 20
+    helicopters: int = 1
+
+
+@dataclass
 class RenderingConfig:
     window_size: int = 500
     render_mode: str = "human"
@@ -86,6 +105,7 @@ class RenderingConfig:
 
 @dataclass
 class MDPConfig:
+    eval_mode: bool = False
     environment: EnvironmentConfig = EnvironmentConfig()
     resources: ResourcesConfig = ResourcesConfig()
     rendering: RenderingConfig = RenderingConfig()
@@ -101,10 +121,9 @@ class ForestFireEnv(gym.Env):
     def __init__(self, *, cfg: MDPConfig):
         super(ForestFireEnv, self).__init__()
         print("Initializing ForestFireEnv with following configuration:")
+        self.cfg = cfg
         self.grid_size = cfg["environment"].grid_size
-        self.resources = cfg["resources"]
-        self.environment = cfg["environment"]
-        self.check_config()
+        self.environment = cfg["environment"].copy()
 
         self.action_space = gym.spaces.MultiDiscrete(
             [
@@ -113,32 +132,51 @@ class ForestFireEnv(gym.Env):
                 self.grid_size,  # y coordinate
             ]
         )
-        self.observation_space = gym.spaces.Box(
-            low=0,
-            high=len(StateEnum),
-            shape=(self.grid_size, self.grid_size),
-            dtype=int,
+
+        self.observation_space = gym.spaces.Dict(
+            {
+                "map_state": gym.spaces.Box(
+                    low=0,
+                    high=len(StateEnum),
+                    shape=(self.grid_size, self.grid_size),
+                    dtype=int,
+                ),
+                # not dict because nested dict is not supported by stable-baselines3
+                "resources": gym.spaces.Box(
+                    low=0,
+                    high=np.inf,
+                    shape=(4,),  # budget, firefighters, firetrucks, helicopters
+                    dtype=int,
+                ),
+            }
         )
 
-        # Initialize state
+        self.affected_blocks: np.ndarray[bool] = None
+        """ A boolean array that indicates which blocks were affected by agent's actions. """
         self.state = self._init_state()
+        self.check_config()
 
         self.window_size = cfg["rendering"]["window_size"]
         assert cfg["rendering"]["render_mode"] in ["human", "rgb_array", "none"]
         self.render_mode = cfg["rendering"]["render_mode"]
         self.render_fps = cfg["rendering"]["render_fps"]
         self.metadata["render_fps"] = self.render_fps
+        self.eval_mode = cfg["eval_mode"] if "eval_mode" in cfg else False
+        """ Is the current environment being used for evaluation? """
+        self.last_action: tuple[ActionEnum, int, int] = None
+        """ Used to render the action taken by the agent in rgb_array mode. """
 
+        self.window: pygame.Surface = None
+        """ If human-rendering is used, `self.window` will be a reference to the window that we draw to. """
+        self.clock: pygame.time.Clock = None
         """
-        If human-rendering is used, `self.window` will be a reference
-        to the window that we draw to. `self.clock` will be a clock that is used
+        `self.clock` will be a clock that is used
         to ensure that the environment is rendered at the correct framerate in
         human-mode. They will remain `None` until human-mode is used for the
         first time.
         """
-        self.window: pygame.Surface = None
-        self.clock: pygame.time.Clock = None
         self.cell_size = self.window_size / self.grid_size
+        """ How many pixels on the window correspond to a single cell in the grid. """
 
     def _init_state(self, seed: int = None):
         # set seed
@@ -146,7 +184,7 @@ class ForestFireEnv(gym.Env):
             np.random.seed(seed)
 
         # Initialize the state to a grid of empty cells
-        state = np.zeros((self.grid_size, self.grid_size), dtype=int)
+        map_state = np.zeros((self.grid_size, self.grid_size), dtype=int)
 
         # Randomly select a number of cells to be trees
         num_trees = int(
@@ -155,100 +193,119 @@ class ForestFireEnv(gym.Env):
         tree_indices = np.random.choice(
             self.grid_size * self.grid_size, num_trees, replace=False
         )
-        state[
+        map_state[
             np.unravel_index(tree_indices, (self.grid_size, self.grid_size))
         ] = StateEnum.TREE.value
 
         num_fires = self.environment["start_fires_num"]
         fire_indices = np.random.choice(tree_indices, num_fires, replace=False)
-        state[
+        map_state[
             np.unravel_index(fire_indices, (self.grid_size, self.grid_size))
         ] = StateEnum.FIRE.value
+        self.affected_blocks = np.zeros((self.grid_size, self.grid_size), dtype=bool)
+        self.last_action = None
 
-        return state
+        return {
+            "map_state": map_state,
+            "resources": np.array(
+                [
+                    self.cfg["resources"]["budget"],
+                    self.cfg["resources"]["firefighters"],
+                    self.cfg["resources"]["firetrucks"],
+                    self.cfg["resources"]["helicopters"],
+                ]
+            ),
+        }
 
     def step(
         self, action: tuple[ActionEnum, int, int]
     ) -> tuple[np.ndarray, float, bool, bool, dict]:
-        # Execute one time step within the environment
-        # This is where you should implement the transition probabilities and rewards
-
-        # Placeholder for state transition logic
-        next_state = self.state.copy()
+        next_state = deepcopy(self.state)
         reward = 0
         done = False
+        self.last_action = None
+        """
+        how many fires were put out directly by the chosen action
+        or by previous actions that affected fire propagation
+        """
+        num_of_put_out_fires = 0
 
-        # Unpack the action
         action_type, y, x = action
+        num_old_fires = np.sum(self.state["map_state"] == StateEnum.FIRE.value)
+
+        if self.eval_mode:
+            print(self.state["resources"])
 
         action_applied = False
-        # Apply the action
         if (
             action_type == ActionEnum.CONTROL_LINE.value
-            and self.state[x, y] != StateEnum.FIRE.value
-            and self.resources["firefighters"] > 0
+            and self.state["map_state"][x, y] != StateEnum.FIRE.value
+            and self.state["resources"][1] > 0
         ):
-            next_state[x, y] = StateEnum.TRENCH.value
-            reward -= self.resources["control_line_cost"]
-            self.resources["budget"] -= self.resources["control_line_cost"]
-            self.resources["firefighters"] -= 1
+            next_state["map_state"][x, y] = StateEnum.TRENCH.value
+            next_state["resources"][0] -= self.environment["control_line_cost"]
+            next_state["resources"][1] -= 1
+            self.affected_blocks[x, y] = True
             action_applied = True
         elif (
             action_type == ActionEnum.BURNOUT.value
-            and self.state[x, y] == StateEnum.TREE.value
-            and self.resources["firefighters"] > 0
+            and self.state["map_state"][x, y] == StateEnum.TREE.value
+            and self.state["resources"][1] > 0
         ):
-            next_state[x, y] = StateEnum.EMPTY.value
-            reward -= self.resources["burnout_cost"]
-            self.resources["budget"] -= self.resources["burnout_cost"]
-            self.resources["firefighters"] -= 1
+            next_state["map_state"][x, y] = StateEnum.EMPTY.value
+            next_state["resources"][0] -= self.environment["burnout_cost"]
+            next_state["resources"][1] -= 1
+            self.affected_blocks[x, y] = True
             action_applied = True
         elif (
-            action_type == ActionEnum.FIRETRUCK.value
-            and self.resources["firetrucks"] > 0
+            action_type == ActionEnum.FIRETRUCK.value and self.state["resources"][2] > 0
         ):
             affected_blocks = circle_indices(
-                (x, y), self.resources["firetruck_range"], next_state.shape
+                (x, y),
+                self.environment["firetruck_range"],
+                next_state["map_state"].shape,
             )
             for i, j in zip(*affected_blocks):
                 if (
                     (0 <= i < self.grid_size)
                     and (0 <= j < self.grid_size)
-                    and next_state[i, j] == StateEnum.FIRE.value
-                    and np.random.rand() < self.resources["firetruck_success_rate"]
+                    and next_state["map_state"][i, j] == StateEnum.FIRE.value
+                    and np.random.rand() < self.environment["firetruck_success_rate"]
                 ):
-                    next_state[i, j] = StateEnum.EMPTY.value
-                    self.state[i, j] = StateEnum.EMPTY.value
-            reward -= self.resources["firetruck_cost"]
-            self.resources["budget"] -= self.resources["firetruck_cost"]
-            self.resources["firetrucks"] -= 1
+                    next_state["map_state"][i, j] = StateEnum.EMPTY.value
+                    self.state["map_state"][i, j] = StateEnum.EMPTY.value
+                    num_of_put_out_fires += 1
+            next_state["resources"][0] -= self.environment["firetruck_cost"]
+            next_state["resources"][2] -= 1
             action_applied = True
         elif (
             action_type == ActionEnum.HELICOPTER.value
-            and self.resources["helicopters"] > 0
+            and self.state["resources"][3] > 0
         ):
             affected_blocks = circle_indices(
-                (x, y), self.resources["helicopter_range"], next_state.shape
+                (x, y),
+                self.environment["helicopter_range"],
+                next_state["map_state"].shape,
             )
             for i, j in zip(*affected_blocks):
                 if (
                     (0 <= i < self.grid_size)
                     and (0 <= j < self.grid_size)
-                    and next_state[i, j] == StateEnum.FIRE.value
-                    and np.random.rand() < self.resources["helicopter_success_rate"]
+                    and next_state["map_state"][i, j] == StateEnum.FIRE.value
+                    and np.random.rand() < self.environment["helicopter_success_rate"]
                 ):
-                    next_state[i, j] = StateEnum.EMPTY.value
-                    self.state[i, j] = StateEnum.EMPTY.value
-            reward -= self.resources["helicopter_cost"]
-            self.resources["budget"] -= self.resources["helicopter_cost"]
-            self.resources["helicopters"] -= 1
+                    next_state["map_state"][i, j] = StateEnum.EMPTY.value
+                    self.state["map_state"][i, j] = StateEnum.EMPTY.value
+                    num_of_put_out_fires += 1
+            next_state["resources"][0] -= self.environment["helicopter_cost"]
+            next_state["resources"][3] -= 1
             action_applied = True
 
         # Update the fire spread
         if not self.environment["disable_fire_propagation"]:
             for i in range(self.grid_size):
                 for j in range(self.grid_size):
-                    if self.state[i, j] == StateEnum.FIRE.value:
+                    if self.state["map_state"][i, j] == StateEnum.FIRE.value:
                         for di in [-1, 0, 1]:
                             for dj in [-1, 0, 1]:
                                 if di == 0 and dj == 0:
@@ -256,44 +313,81 @@ class ForestFireEnv(gym.Env):
                                 if (0 <= i + di < self.grid_size) and (
                                     0 <= j + dj < self.grid_size
                                 ):
-                                    next_state[
+                                    next_state["map_state"][
                                         i + di, j + dj
                                     ] = self.get_next_block_state(
-                                        next_state[i + di, j + dj], abs(di) == abs(dj)
+                                        next_state["map_state"][i + di, j + dj],
+                                        abs(di) == abs(dj),
                                     )
-                        next_state[i, j] = StateEnum.EMPTY.value
-
-        # print(self.resources)
+                                    # if the fire didn't spread we assume it's the agent's actions that put it out
+                                    if (
+                                        next_state["map_state"][i + di, j + dj]
+                                        != StateEnum.FIRE.value
+                                        and self.affected_blocks[i + di, j + dj]
+                                    ):
+                                        num_of_put_out_fires += 1
+                        next_state["map_state"][i, j] = StateEnum.EMPTY.value
 
         # Check if done
-        if StateEnum.FIRE.value not in next_state:
-            print("Fire is out!!")
+        if StateEnum.FIRE.value not in next_state["map_state"]:
+            if self.eval_mode:
+                print("Fire is out!!")
             done = True
-            reward += (
-                np.sum(next_state == StateEnum.TREE.value) + self.resources["budget"]
-            )
+            # if there are less than 10% trees left, we lose
+            # we can't test for 0 because the fire might not have spread to all trees
+            if (
+                np.sum(next_state["map_state"] == StateEnum.TREE.value)
+                < 0.1 * self.grid_size * self.grid_size * self.environment["forest_density"]
+            ):
+                reward += self.environment["losing_reward"]
+            else:
+                reward += np.sum(next_state["map_state"] == StateEnum.TREE.value)
 
         # no more budget
-        if self.resources["budget"] <= 0:
-            # print("Run out of money!!")
+        if self.state["resources"][0] <= 0:
+            if self.eval_mode:
+                print("Run out of money!!")
             done = True
             reward += self.environment["losing_reward"]
 
         # no more resources
         if (
-            self.resources["firefighters"] <= 0
-            and self.resources["firetrucks"] <= 0
-            and self.resources["helicopters"] <= 0
+            self.state["resources"][1] <= 0
+            and self.state["resources"][2] <= 0
+            and self.state["resources"][3] <= 0
         ):
-            # print("Run out of resources!!")
+            if self.eval_mode:
+                print("Run out of resources!!")
             done = True
             reward += self.environment["losing_reward"]
+
+        # negative reward for fire spreading
+        fires_diff = num_old_fires - np.sum(
+            next_state["map_state"] == StateEnum.FIRE.value
+        )
+        # reward += fires_diff * 10
+
+        # reward for putting out fires
+        # reward += num_of_put_out_fires * 100
+
+        # negative reward for doing a useless action
+        # if reward == 0 and not action_applied:
+        #     reward += -100
 
         # Update state
         self.state = next_state
 
-        if self.render_mode == "human":
-            self._render_frame(action=action if action_applied else None)
+        if action_applied:
+            self.last_action = action
+
+        if self.render_mode == "human" or self.render_mode == "rgb_array":
+            self._render_frame(
+                action=action if action_applied else None,
+                reward=reward,
+            )
+
+        if self.eval_mode:
+            print(f"Action: {action}, Reward: {reward}, Done: {done}")
 
         return next_state, reward, done, False, {}
 
@@ -344,7 +438,7 @@ class ForestFireEnv(gym.Env):
         return None
 
     def _render_frame(
-        self, *, action: tuple[ActionEnum, int, int] = None
+        self, *, action: tuple[ActionEnum, int, int] = None, reward: float = None
     ) -> None | np.ndarray:
         if self.window is None and self.render_mode == "human":
             pygame.init()
@@ -368,11 +462,11 @@ class ForestFireEnv(gym.Env):
         for i in range(self.grid_size):
             for j in range(self.grid_size):
                 color = (139, 69, 19)  # Dark brown color for empty cell
-                if self.state[i, j] == StateEnum.TREE.value:
+                if self.state["map_state"][i, j] == StateEnum.TREE.value:
                     color = (0, 255, 0)  # Green for tree
-                elif self.state[i, j] == StateEnum.FIRE.value:
+                elif self.state["map_state"][i, j] == StateEnum.FIRE.value:
                     color = (255, 0, 0)  # Red for fire
-                elif self.state[i, j] == StateEnum.TRENCH.value:
+                elif self.state["map_state"][i, j] == StateEnum.TRENCH.value:
                     color = (227, 145, 107)  # Light brown for trench
                 pygame.draw.rect(
                     canvas,
@@ -386,6 +480,7 @@ class ForestFireEnv(gym.Env):
                 )
 
         # Render the action
+        action = action if action is not None else self.last_action
         if action is not None:
             action_type, y, x = action
             color = (0, 0, 255)
@@ -405,7 +500,9 @@ class ForestFireEnv(gym.Env):
             # for action firetruck and helicopter, render a circle in blue
             elif action_type == ActionEnum.FIRETRUCK.value:
                 affected_blocks = circle_indices(
-                    (x, y), self.resources["firetruck_range"], self.state.shape
+                    (x, y),
+                    self.environment["firetruck_range"],
+                    self.state["map_state"].shape,
                 )
                 for i, j in zip(*affected_blocks):
                     if (0 <= i < self.grid_size) and (0 <= j < self.grid_size):
@@ -421,7 +518,9 @@ class ForestFireEnv(gym.Env):
                         )
             elif action_type == ActionEnum.HELICOPTER.value:
                 affected_blocks = circle_indices(
-                    (x, y), self.resources["helicopter_range"], self.state.shape
+                    (x, y),
+                    self.environment["helicopter_range"],
+                    self.state["map_state"].shape,
                 )
                 for i, j in zip(*affected_blocks):
                     if (0 <= i < self.grid_size) and (0 <= j < self.grid_size):
@@ -443,14 +542,14 @@ class ForestFireEnv(gym.Env):
             # write resources on the button of the window over two lines
             font = pygame.font.SysFont("Arial", 20)
             text = font.render(
-                f"Budget: {self.resources['budget']} | Firefighters: {self.resources['firefighters']} | Firetrucks: {self.resources['firetrucks']}       ",
+                f"Budget: {self.state['resources'][0]} | Firefighters: {self.state['resources'][1]} | Firetrucks: {self.state['resources'][2]}       ",
                 True,
                 (0, 0, 0),
                 (255, 255, 255),
             )
             self.window.blit(text, (0, self.window_size))
             text = font.render(
-                f"Helicopters: {self.resources['helicopters']} | Fires left: {np.sum(self.state == StateEnum.FIRE.value)} | Trees left: {np.sum(self.state == StateEnum.TREE.value)}     ",
+                f"Helicopters: {self.state['resources'][3]} | Fires left: {np.sum(self.state['map_state'] == StateEnum.FIRE.value)} | Trees left: {np.sum(self.state['map_state'] == StateEnum.TREE.value)}  |  Reward: {reward}   ",
                 True,
                 (0, 0, 0),
                 (255, 255, 255),
@@ -525,62 +624,67 @@ class ForestFireEnv(gym.Env):
             True,
             False,
         ], f"disable_fire_propagation is {self.environment['disable_fire_propagation']}"
-        assert self.resources["budget"] >= 0, f"budget is {self.resources['budget']}"
         assert (
-            self.resources["firefighters"] >= 0
-        ), f"firefighters is {self.resources['firefighters']}"
+            self.state["resources"][0] >= 0
+        ), f"budget is {self.state['resources'][0]}"
         assert (
-            self.resources["firetrucks"] >= 0
-        ), f"firetrucks is {self.resources['firetrucks']}"
+            self.state["resources"][1] >= 0
+        ), f"firefighters is {self.state['resources'][1]}"
         assert (
-            self.resources["helicopters"] >= 0
-        ), f"helicopters is {self.resources['helicopters']}"
+            self.state["resources"][2] >= 0
+        ), f"firetrucks is {self.state['resources'][2]}"
         assert (
-            self.resources["control_line_cost"] >= 0
-        ), f"control_line_cost is {self.resources['control_line_cost']}"
+            self.state["resources"][3] >= 0
+        ), f"helicopters is {self.state['resources'][3]}"
         assert (
-            self.resources["burnout_cost"] >= 0
-        ), f"burnout_cost is {self.resources['burnout_cost']}"
+            self.environment["control_line_cost"] >= 0
+        ), f"control_line_cost is {self.environment['control_line_cost']}"
         assert (
-            self.resources["firetruck_cost"] >= 0
-        ), f"firetruck_cost is {self.resources['firetruck_cost']}"
+            self.environment["burnout_cost"] >= 0
+        ), f"burnout_cost is {self.environment['burnout_cost']}"
         assert (
-            self.resources["helicopter_cost"] >= 0
-        ), f"helicopter_cost is {self.resources['helicopter_cost']}"
+            self.environment["firetruck_cost"] >= 0
+        ), f"firetruck_cost is {self.environment['firetruck_cost']}"
         assert (
-            self.resources["firetruck_range"] >= 0
-        ), f"firetruck_range is {self.resources['firetruck_range']}"
+            self.environment["helicopter_cost"] >= 0
+        ), f"helicopter_cost is {self.environment['helicopter_cost']}"
         assert (
-            self.resources["helicopter_range"] >= 0
-        ), f"helicopter_range is {self.resources['helicopter_range']}"
+            self.environment["firetruck_range"] >= 0
+        ), f"firetruck_range is {self.environment['firetruck_range']}"
         assert (
-            self.resources["firetruck_success_rate"] <= 1.0
-        ), f"firetruck_success_rate is {self.resources['firetruck_success_rate']}"
+            self.environment["helicopter_range"] >= 0
+        ), f"helicopter_range is {self.environment['helicopter_range']}"
         assert (
-            self.resources["firetruck_success_rate"] >= 0.0
-        ), f"firetruck_success_rate is {self.resources['firetruck_success_rate']}"
+            self.environment["firetruck_success_rate"] <= 1.0
+        ), f"firetruck_success_rate is {self.environment['firetruck_success_rate']}"
         assert (
-            self.resources["helicopter_success_rate"] <= 1.0
-        ), f"helicopter_success_rate is {self.resources['helicopter_success_rate']}"
+            self.environment["firetruck_success_rate"] >= 0.0
+        ), f"firetruck_success_rate is {self.environment['firetruck_success_rate']}"
         assert (
-            self.resources["helicopter_success_rate"] >= 0.0
-        ), f"helicopter_success_rate is {self.resources['helicopter_success_rate']}"
+            self.environment["helicopter_success_rate"] <= 1.0
+        ), f"helicopter_success_rate is {self.environment['helicopter_success_rate']}"
+        assert (
+            self.environment["helicopter_success_rate"] >= 0.0
+        ), f"helicopter_success_rate is {self.environment['helicopter_success_rate']}"
 
         # sum of all costs multiplied by number of available resources must be less than budget
         sum_costs = (
-            max(self.resources["control_line_cost"], self.resources["burnout_cost"])
-            * self.resources["firefighters"]
-            + self.resources["firetruck_cost"] * self.resources["firetrucks"]
-            + self.resources["helicopter_cost"] * self.resources["helicopters"]
+            max(
+                self.environment["control_line_cost"],
+                self.environment["burnout_cost"],
+            )
+            * self.state["resources"][1]
+            + self.environment["firetruck_cost"] * self.state["resources"][2]
+            + self.environment["helicopter_cost"] * self.state["resources"][3]
         )
         assert (
-            self.resources["budget"] >= sum_costs
-        ), f"budget is {self.resources['budget']} and sum of all costs multiplied by number of available resources is {sum_costs}.\n Please refer to the documentation for more information about the configuration."
+            self.state["resources"][0] >= sum_costs
+        ), f"budget is {self.state['resources'][0]} and sum of all costs multiplied by number of available resources is {sum_costs}.\n Please refer to the documentation for more information about the configuration."
 
         # if the sum of costs is not equal to the budget, we need to warn the user
-        if self.resources["budget"] != sum_costs:
+        if self.state["resources"][0] != sum_costs:
             print(
-                f"\n\nWARNING: budget is {self.resources['budget']} and sum of all costs multiplied by number of available resources is {sum_costs}.\n\n"
+                f"\n\nWARNING: budget is {self.state['resources'][0]} and sum of all costs multiplied by number of available resources is {sum_costs}.\n\n"
             )
 
 
