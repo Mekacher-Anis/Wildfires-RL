@@ -102,7 +102,7 @@ def eval_trained_agent(cfg: BaseConfig) -> None:
     env = gym.make("ForestFireEnv-v0", cfg=cfg["MDP"])
     model = PPO.load(cfg["trained_agent_path"])
 
-    mean_reward, std_reward = evaluate_policy(model, env, n_eval_episodes=100)
+    mean_reward, std_reward = evaluate_policy(model, env, n_eval_episodes=10000)
 
     print(f"mean_reward:{mean_reward:.2f} +/- {std_reward:.2f}")
 

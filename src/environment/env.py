@@ -437,7 +437,7 @@ class ForestFireEnv(gym.Env):
         fires_diff = num_old_fires - np.sum(
             next_state["map_state"] == StateEnum.FIRE.value
         )
-        # reward += fires_diff * 10
+        reward += fires_diff
 
         # reward for putting out fires
         # reward += num_of_put_out_fires * 100
