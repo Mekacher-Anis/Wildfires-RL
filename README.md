@@ -31,7 +31,7 @@ add a custom configuration under [configs/train](./configs/train/) and call
 python3 src/main.py +action=train +MDP=MDP_basic +train=custom_config
 ```
 OR
-continue training from a trained agent (same configuration has to be used)
+continue training from a trained agent (same configuration has to be used). Checkout [releases](https://github.com/Mekacher-Anis/Wildfires-RL/releases) for agents.
 ```shell
 python3 src/main.py +action=train +MDP=MDP_basic +train=train_PPO_single_run_basic trained_agent_path=path/to/best_model.zip
 ```
@@ -53,6 +53,7 @@ OR to record a trained agent (videos will be in folder './videos')
 ```shell
 python3 src/main.py +action=record +MDP=MDP_basic trained_agent_path=path/to/best_model.zip
 ```
+Checkout [releases](https://github.com/Mekacher-Anis/Wildfires-RL/releases) for agents.
 
 When running in eval mode by setting the `eval_mode` to true in MDP configuration the reported reward is actually the proportion of trees left from the starting number of trees for each episode. This is more useful than the accumulated rewards because it allows us to compare different reward functions and gives a somewhat realistic estimate of our true goal which is stopping the fire as fast as possible and saving the trees.
 
