@@ -1,5 +1,5 @@
 environment:
-  grid_size: 5
+  grid_size: 10
   forest_density: 0.9
   start_fires_num: 1
   losing_reward: 0
@@ -12,18 +12,18 @@ environment:
   burnout_cost: 3
   firetruck_cost: 5
   helicopter_cost: 25
-  firetruck_success_rate: 0.8
+  firetruck_success_rate: 1.0
   helicopter_success_rate: 0.9
   firetruck_range: 1
-  helicopter_range: 2
+  helicopter_range: 4
 
 resources:
-  budget: 76
-  firefighters: 2
-  firetrucks: 9
+  budget: 10000
+  firefighters: 8
+  firetrucks: 300
   helicopters: 1
 
 rendering:
   render_mode: 'rgb_array' # 'human' or 'rgb_array' or 'none'
-  render_fps: 4
+  render_fps: 1
   window_size: 500

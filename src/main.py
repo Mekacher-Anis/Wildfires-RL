@@ -1,21 +1,24 @@
 import gymnasium as gym
 import hydra
 from omegaconf import OmegaConf
-from stable_baselines3 import A2C, PPO, SAC
-from stable_baselines3.common.base_class import BaseAlgorithm
+# from stable_baselines3 import A2C, PPO, SAC
 from environment import ForestFireEnv, MDPConfig, ActionEnum
-from stable_baselines3.common.vec_env import VecVideoRecorder, DummyVecEnv, VecMonitor
-from stable_baselines3.common.callbacks import EvalCallback
-from stable_baselines3.common.evaluation import evaluate_policy
+from stable_baselines3.common.vec_env import VecVideoRecorder
 import sys
 from dataclasses import dataclass
 from hydra.core.config_store import ConfigStore
-import importlib
 import pygame
-import os
-
 from environment.env import get_action_name, print_observation
 from environment.env_wrapper import CustomEnvWrapper
+from ray.rllib.algorithms.ppo import PPO
+from ray.rllib.algorithms.sac import SAC
+from ray import tune
+import ray
+from ray import tune
+from ray.rllib.algorithms.algorithm_config import AlgorithmConfig
+from models import TwoHeads
+from models.action_mask_model import ActionMaskModel
+
 
 cs = ConfigStore.instance()
 
@@ -52,44 +55,58 @@ class BaseConfig:
 cs.store(name="base", node=BaseConfig)
 
 
+def unpack_config(env):
+    class UnpackedEnv(env):
+        def __init__(self, env_config):
+            super().__init__(**env_config)
+
+    return UnpackedEnv
+
+
 def train(cfg: BaseConfig) -> None:
-    env: gym.Env = gym.make("ForestFireEnv-v0", cfg=cfg["MDP"])
-    module = importlib.import_module("stable_baselines3")
-    AgentClass: BaseAlgorithm.__class__ = getattr(module, cfg["train"]["agent"])
-    log_path = os.path.join(
-        hydra.core.hydra_config.HydraConfig.get().runtime.output_dir,
-        "tensorboard/",
-    )
-    model: BaseAlgorithm
-    if cfg["trained_agent_path"]:
-        print("Loading trained agent")
-        model = AgentClass.load(cfg["trained_agent_path"], env=env)
-    else:
-        print("Training new agent")
-        model = AgentClass(
-            cfg["train"]["agent_policy"],
-            env,
-            verbose=cfg["verbose"],
-            tensorboard_log=log_path,
-        )
-    cfg["MDP"]["eval_mode"] = True
-    eval_env: gym.Env = gym.make("ForestFireEnv-v0", cfg=cfg["MDP"])
-    eval_env.reset()
-    eval_callback = EvalCallback(
-        eval_env,
-        best_model_save_path=hydra.core.hydra_config.HydraConfig.get().runtime.output_dir,
-        log_path=log_path,
-        eval_freq=5000,
-        deterministic=True,
-        render=False,
-        verbose=0,
-    )
-    model.learn(total_timesteps=cfg["train"]["total_timesteps"], callback=eval_callback)
-    model.save(
-        os.path.join(
-            hydra.core.hydra_config.HydraConfig.get().runtime.output_dir,
-            "trained_agent.zip",
-        ),
+    # Initialize Ray
+    ray.init()
+
+    eval_cfg = cfg.copy()
+    eval_cfg["MDP"]["eval_mode"] = True
+
+    # Define the training configuration
+    config: AlgorithmConfig = {
+        "env": unpack_config(ForestFireEnv),
+        "env_config": {"cfg": cfg["MDP"]},
+        "evaluation_config": {
+            "env": unpack_config(ForestFireEnv),
+            "env_config": {"cfg": eval_cfg["MDP"]},
+        },
+        "evaluation_interval": 2,
+        "num_gpus": 0,
+        "num_workers": 8,
+        "train_batch_size": 40000,
+        "model": {
+            "custom_model": ActionMaskModel,
+            "custom_model_config": {
+                "no_masking": False,
+            },
+            "fcnet_hiddens": [256, 256],
+        }
+    }
+
+    # Define the directory for logging
+    log_dir = hydra.core.hydra_config.HydraConfig.get().runtime.output_dir
+
+    # Start the training
+    tune.run(
+        PPO,
+        config=config,
+        local_dir=log_dir,
+        checkpoint_config={
+            'checkpoint_frequency': 1,
+            'num_to_keep': 3,
+            'checkpoint_at_end': True
+        },
+        stop={
+            "training_iteration": cfg["train"]["total_timesteps"]
+        },  # Define when to stop training
     )
 
 
@@ -98,15 +115,33 @@ def eval_trained_agent(cfg: BaseConfig) -> None:
         print("No trained agent path specified")
         return
 
-    cfg["MDP"]["eval_mode"] = True
-    env = gym.make("ForestFireEnv-v0", cfg=cfg["MDP"])
-    model = PPO.load(cfg["trained_agent_path"])
+    # Initialize Ray
+    ray.init()
 
-    mean_reward, std_reward = evaluate_policy(model, env, n_eval_episodes=10000)
+    eval_cfg = cfg.copy()
+    eval_cfg["MDP"]["eval_mode"] = True
 
-    print(f"mean_reward:{mean_reward:.2f} +/- {std_reward:.2f}")
+    # Define the training configuration
+    config: AlgorithmConfig = {
+        "env": unpack_config(ForestFireEnv),
+        "env_config": {"cfg": cfg["MDP"]},
+        "evaluation_config": {
+            "env": unpack_config(ForestFireEnv),
+            "env_config": {"cfg": eval_cfg["MDP"]},
+        },
+        "evaluation_interval": 1,
+        "evaluation_duration": 10000,
+        "num_gpus": 0,
+        "num_workers": 1,
+        "create_env_on_driver=True": True,
+    }
 
-    env.close()
+    # Create a new trainer and restore from the checkpoint
+    trainer = PPO(config=config)
+    trainer.restore(cfg["trained_agent_path"])
+    eval_res = trainer.evaluate()
+    print("Episode reward mean: ", eval_res["evaluation"]["episode_reward_mean"])
+    print("Episode length mean: ", eval_res["evaluation"]["episode_len_mean"])
 
 
 def record_trained_agent(cfg: BaseConfig) -> None:
@@ -118,7 +153,9 @@ def record_trained_agent(cfg: BaseConfig) -> None:
         return
 
     cfg["MDP"]["rendering"]["render_mode"] = "rgb_array"
-    wrapped_env = CustomEnvWrapper([lambda: gym.make("ForestFireEnv-v0", cfg=cfg["MDP"])])
+    wrapped_env = CustomEnvWrapper(
+        [lambda: gym.make("ForestFireEnv-v0", cfg=cfg["MDP"])]
+    )
 
     # Record the video starting at the first step
     env = VecVideoRecorder(
@@ -129,7 +166,33 @@ def record_trained_agent(cfg: BaseConfig) -> None:
         name_prefix=f"trained-agent-ForestFireEnv-v0",
     )
 
-    model = PPO.load(cfg["trained_agent_path"])
+    # Initialize Ray
+    ray.init()
+
+    eval_cfg = cfg.copy()
+    eval_cfg["MDP"]["eval_mode"] = True
+
+    # Define the training configuration
+    config: AlgorithmConfig = {
+        "env": unpack_config(ForestFireEnv),
+        "env_config": {"cfg": cfg["MDP"]},
+        "evaluation_config": {
+            "env": unpack_config(ForestFireEnv),
+            "env_config": {"cfg": eval_cfg["MDP"]},
+        },
+        "evaluation_interval": 1,
+        "num_gpus": 0,
+        "num_workers": 1,
+        "create_env_on_driver=True": True,
+        "train_batch_size": 4000,
+        "model": {
+            "fcnet_hiddens": [64],
+        }
+    }
+
+    # Create a new trainer and restore from the checkpoint
+    trainer = PPO(config=config)
+    trainer.restore(cfg["trained_agent_path"])
 
     n_steps = cfg["record"]["video_length"]
 
@@ -143,13 +206,18 @@ def record_trained_agent(cfg: BaseConfig) -> None:
                     "resources": obs["resources"][i],
                 }
             )
-        action, _states = model.predict(obs)
-        print(f"Action: {get_action_name(action[0])}")
-        obs, reward, done, info = env.step(action)
+        action = trainer.compute_single_action(
+            {
+                "map_state": obs["map_state"][0],
+                "resources": obs["resources"][0],
+            }
+        )
+        print(f"Action: {get_action_name(action)}")
+        obs, reward, done, info = env.step([action])
         print(f"Reward: {reward}")
         sum_reward += reward
         if done:
-            # when rendering the environment in rgb_array mode, the rendering is off 
+            # when rendering the environment in rgb_array mode, the rendering is off
             # by one step, so we need to manually trigger the last rendering here
             env.step([(0, 0, 0)])
             break
@@ -219,7 +287,7 @@ def play(cfg: BaseConfig) -> None:
                         int(clickx // env.unwrapped.cell_size),
                         int(clicky // env.unwrapped.cell_size),
                     )
-        ns, r, done, trunc, info = env.step(action)
+        ns, r, done, trunc, info = env.step(((action[1] * 10) + action[2]) / 100)
         running = not done
 
     pygame.quit()
