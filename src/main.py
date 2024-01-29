@@ -1,6 +1,7 @@
 import gymnasium as gym
 import hydra
 from omegaconf import OmegaConf
+
 # from stable_baselines3 import A2C, PPO, SAC
 from environment import ForestFireEnv, MDPConfig, ActionEnum
 from stable_baselines3.common.vec_env import VecVideoRecorder
@@ -18,7 +19,10 @@ from ray import tune
 from ray.rllib.algorithms.algorithm_config import AlgorithmConfig
 from models import TwoHeads
 from models.action_mask_model import ActionMaskModel
-
+from PIL import Image
+from datetime import datetime
+import os
+import cv2
 
 cs = ConfigStore.instance()
 
@@ -88,7 +92,7 @@ def train(cfg: BaseConfig) -> None:
                 "no_masking": False,
             },
             "fcnet_hiddens": [256, 256],
-        }
+        },
     }
 
     # Define the directory for logging
@@ -100,9 +104,9 @@ def train(cfg: BaseConfig) -> None:
         config=config,
         local_dir=log_dir,
         checkpoint_config={
-            'checkpoint_frequency': 1,
-            'num_to_keep': 3,
-            'checkpoint_at_end': True
+            "checkpoint_frequency": 1,
+            "num_to_keep": 3,
+            "checkpoint_at_end": True,
         },
         stop={
             "training_iteration": cfg["train"]["total_timesteps"]
@@ -134,6 +138,13 @@ def eval_trained_agent(cfg: BaseConfig) -> None:
         "num_gpus": 0,
         "num_workers": 1,
         "create_env_on_driver=True": True,
+        "model": {
+            "custom_model": ActionMaskModel,
+            "custom_model_config": {
+                "no_masking": False,
+            },
+            "fcnet_hiddens": [256, 256],
+        },
     }
 
     # Create a new trainer and restore from the checkpoint
@@ -153,18 +164,7 @@ def record_trained_agent(cfg: BaseConfig) -> None:
         return
 
     cfg["MDP"]["rendering"]["render_mode"] = "rgb_array"
-    wrapped_env = CustomEnvWrapper(
-        [lambda: gym.make("ForestFireEnv-v0", cfg=cfg["MDP"])]
-    )
-
-    # Record the video starting at the first step
-    env = VecVideoRecorder(
-        wrapped_env,
-        "videos",
-        record_video_trigger=lambda x: x == 0,
-        video_length=cfg["record"]["video_length"],
-        name_prefix=f"trained-agent-ForestFireEnv-v0",
-    )
+    env: ForestFireEnv = gym.make("ForestFireEnv-v0", cfg=cfg["MDP"])
 
     # Initialize Ray
     ray.init()
@@ -186,8 +186,12 @@ def record_trained_agent(cfg: BaseConfig) -> None:
         "create_env_on_driver=True": True,
         "train_batch_size": 4000,
         "model": {
-            "fcnet_hiddens": [64],
-        }
+            "custom_model": ActionMaskModel,
+            "custom_model_config": {
+                "no_masking": False,
+            },
+            "fcnet_hiddens": [256, 256],
+        },
     }
 
     # Create a new trainer and restore from the checkpoint
@@ -196,33 +200,55 @@ def record_trained_agent(cfg: BaseConfig) -> None:
 
     n_steps = cfg["record"]["video_length"]
 
-    obs = env.reset()
+    obs, _ = env.reset()
+    output_folder_name = datetime.now().strftime("./videos/recording_%Y-%m-%d_%H-%M-%S")
+    os.makedirs(output_folder_name)
+    images_paths: list[str] = []
+    Image.fromarray(env.render()).save(f"{output_folder_name}/frame_0.png")
+    images_paths.append(f"{output_folder_name}/frame_0.png")
     sum_reward = 0
     for i in range(n_steps):
-        for i in range(len(obs["map_state"])):
-            print_observation(
-                {
-                    "map_state": obs["map_state"][i],
-                    "resources": obs["resources"][i],
-                }
-            )
-        action = trainer.compute_single_action(
-            {
-                "map_state": obs["map_state"][0],
-                "resources": obs["resources"][0],
-            }
-        )
+        # for i in range(len(obs["map_state"])):
+        print_observation(obs)
+        action = trainer.compute_single_action(obs)
         print(f"Action: {get_action_name(action)}")
-        obs, reward, done, info = env.step([action])
+        obs, reward, done, trunc, info = env.step(action)
+        Image.fromarray(env.render()).save(f"{output_folder_name}/frame_{i + 1}.png")
+        images_paths.append(f"{output_folder_name}/frame_{i + 1}.png")
         print(f"Reward: {reward}")
         sum_reward += reward
         if done:
             # when rendering the environment in rgb_array mode, the rendering is off
             # by one step, so we need to manually trigger the last rendering here
-            env.step([(0, 0, 0)])
+            env.step((0, 0, 0))
+            Image.fromarray(env.render()).save(
+                f"{output_folder_name}/frame_{i + 2}.png"
+            )
+            images_paths.append(f"{output_folder_name}/frame_{i + 2}.png")
             break
     print(f"Accumulated reward: {sum_reward}")
     env.close()
+
+    # Create a VideoWriter object
+    fourcc = cv2.VideoWriter_fourcc(*"mp4v")
+    video = cv2.VideoWriter(
+        f"{output_folder_name}/output.mp4",
+        fourcc,
+        cfg["MDP"]["rendering"]["render_fps"],
+        (
+            cfg["MDP"]["rendering"]["window_size"],
+            cfg["MDP"]["rendering"]["window_size"],
+        ),
+    )
+
+    for file in images_paths:
+        frame = cv2.imread(file)
+        print(frame.shape)
+        video.write(frame)
+
+    # Release the VideoWriter and close OpenCV windows
+    video.release()
+    cv2.destroyAllWindows()
 
 
 def play(cfg: BaseConfig) -> None:
@@ -287,7 +313,7 @@ def play(cfg: BaseConfig) -> None:
                         int(clickx // env.unwrapped.cell_size),
                         int(clicky // env.unwrapped.cell_size),
                     )
-        ns, r, done, trunc, info = env.step(((action[1] * 10) + action[2]) / 100)
+        ns, r, done, trunc, info = env.step(action)
         running = not done
 
     pygame.quit()

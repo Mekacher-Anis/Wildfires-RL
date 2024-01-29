@@ -8,3 +8,4 @@ stable-baselines3==2.2.1
 tensorboard
 ray[rllib]==2.9.1
 torch
+opencv-python

@@ -52,7 +52,6 @@ def print_observation(observation: dict):
     Args:
         observation (dict): The observation returned by the environment.
     """
-    print(observation.keys())
     # print Map
     for i in range(observation["actual_obs"]["map_state"].shape[0]):
         # print map border
