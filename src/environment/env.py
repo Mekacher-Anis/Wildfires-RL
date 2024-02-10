@@ -7,6 +7,7 @@ from enum import Enum
 from dataclasses import dataclass
 from hydra.core.config_store import ConfigStore
 from copy import deepcopy
+import time
 
 
 class ActionEnum(Enum):
@@ -254,6 +255,22 @@ class ForestFireEnv(gym.Env):
         applied on the old state.
         """
 
+        self.surrounding_blocks_dict: dict[tuple[int, int], list[tuple[int, int, bool]]] = {}
+        """Pre-calculated dict of each block and its surroundings, Used to speed-up the fire update loop"""
+        for i in range(self.grid_size):
+            for j in range(self.grid_size):
+                self.surrounding_blocks_dict[(i, j)] = []
+                for di in [-1, 0, 1]:
+                    for dj in [-1, 0, 1]:
+                        if di == 0 and dj == 0:
+                            continue
+                        if (0 <= i + di < self.grid_size) and (
+                            0 <= j + dj < self.grid_size
+                        ):
+                            self.surrounding_blocks_dict[(i, j)].append(
+                                (i + di, j + dj, abs(di) == abs(dj))
+                            )
+
     def _init_state(self, seed: int = None):
         # set seed
         if seed is not None:
@@ -269,15 +286,15 @@ class ForestFireEnv(gym.Env):
         tree_indices = np.random.choice(
             self.grid_size * self.grid_size, num_trees, replace=False
         )
-        map_state[
-            np.unravel_index(tree_indices, (self.grid_size, self.grid_size))
-        ] = StateEnum.TREE.value
+        map_state[np.unravel_index(tree_indices, (self.grid_size, self.grid_size))] = (
+            StateEnum.TREE.value
+        )
 
         num_fires = self.environment["start_fires_num"]
         fire_indices = np.random.choice(tree_indices, num_fires, replace=False)
-        map_state[
-            np.unravel_index(fire_indices, (self.grid_size, self.grid_size))
-        ] = StateEnum.FIRE.value
+        map_state[np.unravel_index(fire_indices, (self.grid_size, self.grid_size))] = (
+            StateEnum.FIRE.value
+        )
         self.affected_blocks = np.zeros((self.grid_size, self.grid_size), dtype=bool)
         self.last_action = None
         self.num_original_trees = map_state[map_state == StateEnum.TREE.value].size
@@ -399,31 +416,46 @@ class ForestFireEnv(gym.Env):
 
         # Update the fire spread
         if not self.environment["disable_fire_propagation"]:
-            for i in range(self.grid_size):
-                for j in range(self.grid_size):
-                    if self.state["actual_obs"]["map_state"][i, j] == StateEnum.FIRE.value:
-                        for di in [-1, 0, 1]:
-                            for dj in [-1, 0, 1]:
-                                if di == 0 and dj == 0:
-                                    continue
-                                if (0 <= i + di < self.grid_size) and (
-                                    0 <= j + dj < self.grid_size
-                                ):
-                                    next_state["actual_obs"]["map_state"][
-                                        i + di, j + dj
-                                    ] = self.get_next_block_state(
-                                        next_state["actual_obs"]["map_state"][i + di, j + dj],
-                                        abs(di) == abs(dj),
-                                    )
-                                    # if the fire didn't spread we assume it's the agent's actions that put it out
-                                    if (
-                                        next_state["actual_obs"]["map_state"][i + di, j + dj]
-                                        != StateEnum.FIRE.value
-                                        and self.affected_blocks[i + di, j + dj]
-                                    ):
-                                        num_of_put_out_fires += 1
-                        next_state["actual_obs"]["map_state"][i, j] = StateEnum.EMPTY.value
-
+            fire_indices = np.where(
+                self.state["actual_obs"]["map_state"] == StateEnum.FIRE.value
+            )
+            if len(fire_indices[0]) != 0:
+                fire_indices_tuples = list(zip(fire_indices[0], fire_indices[1]))
+                surrounding_blocks = set(
+                    [
+                        i
+                        for t in fire_indices_tuples
+                        for i in self.surrounding_blocks_dict[t]
+                    ]
+                )
+                xs, ys, diags = zip(*surrounding_blocks)
+                xs, ys, diags = np.array(xs), np.array(ys), np.array(diags)
+                surrounding_block_indices: tuple[np.ndarray[int], np.ndarray[int]] = (
+                    xs,
+                    ys,
+                )
+                surrounding_trees = np.where(
+                    self.state["actual_obs"]["map_state"][surrounding_block_indices]
+                    == StateEnum.TREE.value 
+                )[0]
+                probabilities = np.random.random(len(surrounding_trees))
+                trees_to_burn = surrounding_trees[
+                    np.where(
+                        ((probabilities < self.environment["tree_fire_spread_prob"]) & (~diags[surrounding_trees])) |
+                        ((probabilities < self.environment["diagonal_tree_fire_spread_prob"]) & diags[surrounding_trees])
+                    )[0]
+                ]
+                trees_to_burn_indices = (
+                    xs[trees_to_burn],
+                    ys[trees_to_burn],
+                )
+                next_state["actual_obs"]["map_state"][
+                    trees_to_burn_indices
+                ] = StateEnum.FIRE.value
+                next_state["actual_obs"]["map_state"][
+                    fire_indices
+                ] = StateEnum.EMPTY.value
+                
         # Check if done
         if StateEnum.FIRE.value not in next_state["actual_obs"]["map_state"]:
             if self.eval_mode:
@@ -438,7 +470,7 @@ class ForestFireEnv(gym.Env):
                 reward += self.environment["losing_reward"]
             else:
                 reward += np.sum(next_state["actual_obs"]["map_state"] == StateEnum.TREE.value)
-
+        
         # no more budget
         if self.state["actual_obs"]["resources"][0] <= 0:
             if self.eval_mode:
@@ -456,13 +488,13 @@ class ForestFireEnv(gym.Env):
                 print("Run out of resources!!")
             done = True
             reward += self.environment["losing_reward"]
-
+                
         # negative reward for fire spreading
         fires_diff = num_old_fires - np.sum(
             next_state["actual_obs"]["map_state"] == StateEnum.FIRE.value
         )
         reward += fires_diff
-
+        
         # reward for putting out fires
         # reward += num_of_put_out_fires * 100
 
@@ -507,6 +539,7 @@ class ForestFireEnv(gym.Env):
                 )
             else:
                 reward = 0
+
         return next_state, reward, done, False, {}
 
     def get_next_block_state(self, current_state: StateEnum, diagonal: bool):
@@ -797,8 +830,10 @@ class ForestFireEnv(gym.Env):
                 self.environment["burnout_cost"],
             )
             * self.state["actual_obs"]["resources"][1]
-            + self.environment["firetruck_cost"] * self.state["actual_obs"]["resources"][2]
-            + self.environment["helicopter_cost"] * self.state["actual_obs"]["resources"][3]
+            + self.environment["firetruck_cost"]
+            * self.state["actual_obs"]["resources"][2]
+            + self.environment["helicopter_cost"]
+            * self.state["actual_obs"]["resources"][3]
         )
         assert (
             self.state["actual_obs"]["resources"][0] >= sum_costs

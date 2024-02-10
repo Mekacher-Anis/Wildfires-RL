@@ -23,6 +23,20 @@ from PIL import Image
 from datetime import datetime
 import os
 import cv2
+import random
+import timeit, functools, time
+import numpy as np
+import matplotlib.pyplot as plt
+
+timeit.template = """
+def inner(_it, _timer{init}):
+    {setup}
+    _t0 = _timer()
+    for _i in _it:
+        retval = {stmt}
+    _t1 = _timer()
+    return _t1 - _t0, retval
+"""
 
 cs = ConfigStore.instance()
 
@@ -83,17 +97,26 @@ def train(cfg: BaseConfig) -> None:
             "env_config": {"cfg": eval_cfg["MDP"]},
         },
         "evaluation_interval": 2,
-        "num_gpus": 0,
-        "num_workers": 8,
-        "train_batch_size": 40000,
+        "gpu_count": 1,
+        "num_gpus": 0.0001,
+        "num_cpus": 10,
+        "num_workers": 10,
+        "num_gpus_per_worker": (1 - 0.0001) / 10,
+        "train_batch_size": 4000,
         "model": {
             "custom_model": ActionMaskModel,
             "custom_model_config": {
                 "no_masking": False,
             },
-            "fcnet_hiddens": [256, 256],
+            "fcnet_hiddens": [128, 128],
         },
     }
+    
+    # "gpu_count": 1,
+    # "num_gpus": 0.0001,
+    # "num_cpus": 9,
+    # "num_workers": 9,
+    # "num_gpus_per_worker": (1 - 0.0001) / 9,
 
     # Define the directory for logging
     log_dir = hydra.core.hydra_config.HydraConfig.get().runtime.output_dir
@@ -318,7 +341,48 @@ def play(cfg: BaseConfig) -> None:
 
     pygame.quit()
     sys.exit()
+    
 
+def eval_env_time(cfg: BaseConfig) -> None:
+    eval_cfg = cfg.copy()
+    eval_cfg["MDP"]["eval_mode"] = True
+    
+    env: ForestFireEnv = gym.make("ForestFireEnv-v0", cfg=cfg["MDP"])
+    env.reset()
+    
+    # print("Environemnt render mode : ", env.render_mode)
+    # print("Should do shit : ", env.render_mode == "human" or env.render_mode == "rgb_array")
+    
+    timings: list[float] = []
+    inner_timings: list[np.ndarray] = []
+    num_ep = 0
+    start_time = time.time_ns()
+    for i in range(10000):
+        action_type, x, y = random.randint(0, 4), random.randint(0, 9), random.randint(0, 9)
+        timing, res = timeit.timeit(functools.partial(env.step, (action_type, x, y)), number=1)
+        timings.append(timing)
+        obs, reward, done, trunc, info = res
+        inner_timings.append(info['timings'])
+        if done:
+            num_ep += 1
+            env.reset()
+    end_time = time.time_ns()
+    inner_timings_stacked = np.stack(inner_timings)
+    # Compute the mean time for each checkpoint
+    mean_times = inner_timings_stacked.mean(axis=0)
+    # Create labels for the pie chart
+    labels = ['Checkpoint {}'.format(i+1) for i in range(8)]
+    # Create the pie chart
+    plt.pie(mean_times, labels=labels, autopct='%1.1f%%')
+    # Display the chart
+    plt.show()
+    plt.savefig('timings.png')
+    
+    print(inner_timings_stacked.shape)
+    print(f"Num of episodes: {num_ep}")
+    print(f"Time per step: {np.array(timings).mean() * 1000} ms")
+    print(f"Total runtime: {(end_time - start_time)/(10**9)} s")
+    
 
 @hydra.main(config_path="../configs", config_name="base", version_base=None)
 def main(cfg: BaseConfig) -> None:
@@ -335,6 +399,8 @@ def main(cfg: BaseConfig) -> None:
         play(cfg)
     elif cfg["action"] == "eval":
         eval_trained_agent(cfg)
+    elif cfg["action"] == "timeit":
+        eval_env_time(cfg)
     else:
         print("Unknown action")
         return
